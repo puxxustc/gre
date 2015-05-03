@@ -189,6 +189,10 @@ static void tun_cb(void)
 	*(uint16_t *)(buf) = 0;
 	*(uint16_t *)(buf + 2) = htons(0x0800);
 	sendto(sock, buf, n + 4, 0, (struct sockaddr *)&remote, sizeof(struct sockaddr));
+	if (((buf[4] >> 4) == 4) && (buf[4 + 9] == 6))
+	{
+		sendto(sock, buf, n + 4, 0, (struct sockaddr *)&remote, sizeof(struct sockaddr));
+	}
 }
 
 static int tun_new(const char *dev)
