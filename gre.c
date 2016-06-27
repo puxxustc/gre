@@ -52,7 +52,7 @@ int main(int argc, char **argv)
 {
 	fd_set readset;
 
-	if (argc != 4) 
+	if (argc != 4)
 	{
 		printf("usage: %s <tun> remote local\n", argv[0]);
 		return EXIT_FAILURE;
@@ -180,7 +180,7 @@ static void tun_cb(void)
 {
 	int n;
 
-	n = read(tun, buf + 4, sizeof(buf));
+	n = read(tun, buf + 4, sizeof(buf) - 4);
 	if (n < 0)
 	{
 		perror("read");
