@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/if_tun.h>
+#include <linux/if_ether.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <pwd.h>
@@ -168,7 +169,7 @@ static void gre_cb(void)
         return;
     }
     uint16_t protocol = ntohs(*(uint16_t *)(buf + ihl + 2));
-    if (protocol != 0x0800)
+    if (protocol != ETH_P_IP && protocol != ETH_P_IPV6)
     {
         return;
     }
@@ -187,7 +188,18 @@ static void tun_cb(void)
         return;
     }
     *(uint16_t *)(buf) = 0;
-    *(uint16_t *)(buf + 2) = htons(0x0800);
+    switch (buf[4] >> 4) // IP version
+    {
+        case 4:
+            *(uint16_t *)(buf + 2) = htons(ETH_P_IP);
+            break;
+        case 6:
+            *(uint16_t *)(buf + 2) = htons(ETH_P_IPV6);
+            break;
+        default:
+            printf("unknown protocol detected\n");
+            return;
+    }
     sendto(sock, buf, n + 4, 0, (struct sockaddr *)&remote, sizeof(struct sockaddr));
 }
 
