@@ -169,7 +169,7 @@ static void gre_cb(void)
         return;
     }
     uint16_t protocol = ntohs(*(uint16_t *)(buf + ihl + 2));
-    if (protocol != ETH_P_IP || protocol != ETH_P_IPV6)
+    if (protocol != ETH_P_IP && protocol != ETH_P_IPV6)
     {
         return;
     }
