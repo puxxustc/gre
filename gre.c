@@ -81,13 +81,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "bad local address\n");
         return EXIT_FAILURE;
     }
-    else
+
+    if (bind(sock, (struct sockaddr *)&local, sizeof(local)) != 0)
     {
-        if (bind(sock, (struct sockaddr *)&local, sizeof(local)) != 0)
-        {
-            perror("bind");
-            return EXIT_FAILURE;
-        }
+        perror("bind");
+        return EXIT_FAILURE;
     }
 
     remote.sin_family = AF_INET;
