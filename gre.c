@@ -42,7 +42,7 @@ static struct sockaddr_in remote;
 uint8_t buf[4096];
 
 static void gre_cb(void);
-static void tun_cb(void);
+static int tun_cb(void);
 static int tun_new(const char *dev);
 static int setnonblock(int fd);
 static int runas(const char *user);
@@ -132,7 +132,8 @@ int main(int argc, char **argv)
 
         if (FD_ISSET(tun, &readset))
         {
-            tun_cb();
+            if (tun_cb() < 0)
+                return 0;
         }
     }
 
@@ -176,19 +177,24 @@ static void gre_cb(void)
     write(tun, buf + ihl + 4, n - ihl - 4);
 }
 
-static void tun_cb(void)
+static int tun_cb(void)
 {
     int n;
 
     n = read(tun, buf + 4, sizeof(buf) - 4);
     if (n < 0)
     {
+        int err = errno;
         perror("read");
-        return;
+        if (err == EBADFD)
+            return -1;
+
+        return 0;
     }
     *(uint16_t *)(buf) = 0;
     *(uint16_t *)(buf + 2) = htons(0x0800);
     sendto(sock, buf, n + 4, 0, (struct sockaddr *)&remote, sizeof(struct sockaddr));
+    return 0;
 }
 
 static int tun_new(const char *dev)
