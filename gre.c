@@ -2,6 +2,7 @@
  * gre.c - userspace GRE tunnel
  *
  * Copyright (C) 2015 - 2017, Xiaoxiao <i@pxx.io>
+ * Copyright (C) 2019, Mikael Magnusson <mikma@users.sourceforge.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,7 +22,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/if_tun.h>
+#include <net/ethernet.h>
 #include <net/if.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <pwd.h>
 #include <stdint.h>
@@ -37,16 +40,21 @@
 
 static int tun;
 static int sock;
-static struct sockaddr_in remote;
+static struct sockaddr_storage remote;
+static size_t remote_len;
 
 uint8_t buf[4096];
 
 static void gre_cb(void);
+static void gre_ipv4(const uint8_t *buf, int n);
+static void gre_ipv6(const uint8_t *buf, int n, const struct sockaddr_in6 *src);
+static void gre_any(const uint8_t *buf, int n);
 static int tun_cb(void);
 static int tun_new(const char *dev);
 static int setnonblock(int fd);
 static int runas(const char *user);
 static int daemonize(void);
+static int inet_addr_storage(const char *cp, struct sockaddr_storage *sp, size_t *sp_len);
 
 int main(int argc, char **argv)
 {
@@ -65,35 +73,28 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    sock = socket(AF_INET, SOCK_RAW, IPPROTO_GRE);
+    struct sockaddr_storage local;
+    size_t local_len = 0;
+    if (inet_addr_storage(argv[3], &local, &local_len))
+    {
+        fprintf(stderr, "bad local address\n");
+        return EXIT_FAILURE;
+    }
+
+    sock = socket(local.ss_family, SOCK_RAW, IPPROTO_GRE);
     if (sock < 0)
     {
         perror("socket");
         return EXIT_FAILURE;
     }
 
-    struct sockaddr_in local;
-    local.sin_family = AF_INET;
-    local.sin_port = htons(IPPROTO_GRE);
-    local.sin_addr.s_addr = inet_addr(argv[3]);
-    if (local.sin_addr.s_addr == INADDR_NONE)
+    if (bind(sock, (struct sockaddr *)&local, local_len) != 0)
     {
-        fprintf(stderr, "bad local address\n");
+        perror("bind");
         return EXIT_FAILURE;
     }
-    else
-    {
-        if (bind(sock, (struct sockaddr *)&local, sizeof(local)) != 0)
-        {
-            perror("bind");
-            return EXIT_FAILURE;
-        }
-    }
 
-    remote.sin_family = AF_INET;
-    remote.sin_port = htons(IPPROTO_GRE);
-    remote.sin_addr.s_addr = inet_addr(argv[2]);
-    if (remote.sin_addr.s_addr == INADDR_NONE)
+    if (inet_addr_storage(argv[2], &remote, &remote_len))
     {
         fprintf(stderr, "bad remote address\n");
         return EXIT_FAILURE;
@@ -142,15 +143,28 @@ int main(int argc, char **argv)
 
 static void gre_cb(void)
 {
-    int ihl;    // IP header length
     int n;
+    struct sockaddr_storage src;
+    size_t src_len = sizeof(src);
 
-    n = recv(sock, buf, sizeof(buf), 0);
+    memset(&src, 0, src_len);
+    n = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*)&src, &src_len);
     if (n < 0)
     {
         perror("recv");
         return;
     }
+
+    switch (remote.ss_family) {
+        case AF_INET: gre_ipv4(buf, n); break;
+        case AF_INET6: gre_ipv6(buf, n, (const struct sockaddr_in6*)&src); break;
+    }
+}
+
+static void gre_ipv4(const uint8_t *buf, int n)
+{
+    int ihl;    // IP header length
+
     ihl = 4 * (buf[0] & 0x0f);
     if (ihl > 60 || ihl < 20)
     {
@@ -158,30 +172,52 @@ static void gre_cb(void)
         return;
     }
     // check source IPv4 address
-    if (*(uint32_t *)(buf + 12) != remote.sin_addr.s_addr)
+    const struct sockaddr_in *remote_in = (const struct sockaddr_in *)&remote;
+    if (*(uint32_t *)(buf + 12) != remote_in->sin_addr.s_addr)
     {
         return;
     }
 
+    gre_any(buf + ihl, n - ihl);
+}
+
+static void gre_ipv6(const uint8_t *buf, int n, const struct sockaddr_in6 *src)
+{
+    if (n < 40)
+    {
+        return;
+    }
+    // check source IPv6 address
+    const struct sockaddr_in6 *remote_in6 = (const struct sockaddr_in6 *)&remote;
+    if (memcmp(src->sin6_addr.s6_addr, remote_in6->sin6_addr.s6_addr, 16) != 0)
+    {
+        return;
+    }
+
+    gre_any(buf, n);
+}
+
+static void gre_any(const uint8_t *buf, int n)
+{
     // parse GRE header
-    if (*(uint16_t *)(buf + ihl) != 0)
+    if (*(uint16_t *)(buf) != 0)
     {
         return;
     }
-    uint16_t protocol = ntohs(*(uint16_t *)(buf + ihl + 2));
-    if (protocol != 0x0800)
+    uint16_t protocol = ntohs(*(uint16_t *)(buf + 2));
+    if (protocol != ETHERTYPE_IP && protocol != ETHERTYPE_IPV6)
     {
         return;
     }
 
-    write(tun, buf + ihl + 4, n - ihl - 4);
+    write(tun, buf, n);
 }
 
 static int tun_cb(void)
 {
     int n;
 
-    n = read(tun, buf + 4, sizeof(buf) - 4);
+    n = read(tun, buf, sizeof(buf));
     if (n < 0)
     {
         int err = errno;
@@ -191,9 +227,14 @@ static int tun_cb(void)
 
         return 0;
     }
-    *(uint16_t *)(buf) = 0;
-    *(uint16_t *)(buf + 2) = htons(0x0800);
-    sendto(sock, buf, n + 4, 0, (struct sockaddr *)&remote, sizeof(struct sockaddr));
+    buf[0] = 0;
+    buf[1] = 0;
+    uint16_t proto = ntohs(*(uint16_t *)(buf + 2));
+    if (proto != ETHERTYPE_IP && proto != ETHERTYPE_IPV6)
+    {
+        return 0;
+    }
+    sendto(sock, buf, n, 0, (struct sockaddr *)&remote, remote_len);
     return 0;
 }
 
@@ -210,7 +251,7 @@ static int tun_new(const char *dev)
 
     bzero(&ifr, sizeof(struct ifreq));
 
-    ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+    ifr.ifr_flags = IFF_TUN;
     if (*dev != '\0')
     {
         strncpy(ifr.ifr_name, dev, IFNAMSIZ);
@@ -280,6 +321,38 @@ static int daemonize(void)
     {
         perror("setsid");
         return -1;
+    }
+
+    return 0;
+}
+
+static int inet_addr_storage(const char *cp, struct sockaddr_storage *sp, size_t *sp_len)
+{
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    int res;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_flags = AI_NUMERICHOST | AI_ADDRCONFIG;
+    res = getaddrinfo(cp, NULL, &hints, &result);
+    if (res != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(res));
+        return -1;
+    }
+
+    memcpy(sp, result->ai_addr, result->ai_addrlen);
+    *sp_len = result->ai_addrlen;
+
+    freeaddrinfo(result);
+    result = NULL;
+
+    if (sp->ss_family == AF_INET) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)sp;
+        sin->sin_port = htons(IPPROTO_GRE);
+    } else if (sp->ss_family == AF_INET6) {
+        struct sockaddr_in6 *sin = (struct sockaddr_in6 *)sp;
+        sin->sin6_port = htons(IPPROTO_GRE);
     }
 
     return 0;

@@ -30,6 +30,8 @@ sudo ./gre <tun dev> remote local
 
 Copyright (C) 2015 - 2017, Xiaoxiao <i@pxx.io>
 
+Copyright (C) 2019, Mikael Magnusson <mikma@users.sourceforge.net>
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
